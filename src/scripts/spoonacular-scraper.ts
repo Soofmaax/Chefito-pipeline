@@ -6,19 +6,18 @@
  * Cron: 0 22 * * * /usr/bin/node /path/to/spoonacular-scraper.js
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { Pool } from 'pg';
 import crypto from 'crypto';
 
 // Configuration
 const SPOONACULAR_API_KEY = process.env.SPOONACULAR_API_KEY;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const DATABASE_URL = process.env.DATABASE_URL;
 
-if (!SPOONACULAR_API_KEY || !SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+if (!SPOONACULAR_API_KEY || !DATABASE_URL) {
   throw new Error('Variables d\'environnement manquantes');
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+const pool = new Pool({ connectionString: DATABASE_URL });
 
 interface SpoonacularRecipe {
   id: number;
@@ -44,18 +43,13 @@ class SpoonacularScraper {
     console.log(`🚀 Début du scraping - Objectif: ${targetCount} recettes`);
 
     // Créer une session de scraping
-    const { data: session, error: sessionError } = await supabase
-      .from('scraping_sessions')
-      .insert({
-        provider: 'spoonacular',
-        status: 'running',
-        config: { target_count: targetCount }
-      })
-      .select()
-      .single();
-
-    if (sessionError) {
-      console.error('❌ Erreur création session:', sessionError);
+    const { rows: sessionRows } = await pool.query(
+      'INSERT INTO scraping_sessions(provider, status, config) VALUES($1,$2,$3) RETURNING *',
+      ['spoonacular', 'running', { target_count: targetCount }]
+    );
+    const session = sessionRows[0];
+    if (!session) {
+      console.error('❌ Erreur création session');
       return;
     }
 
@@ -65,7 +59,7 @@ class SpoonacularScraper {
     const dishTypes = ['main course', 'dessert', 'appetizer', 'soup', 'salad'];
 
     try {
-      for (let offset = 0; scrapedCount < targetCount; offset += 20) {
+      for (let offset = 0; scrapedCount < targetCount && scrapedCount < this.dailyQuota; offset += 20) {
         // Rotation des types de cuisine et plats
         const cuisine = cuisineTypes[Math.floor(Math.random() * cuisineTypes.length)];
         const dishType = dishTypes[Math.floor(Math.random() * dishTypes.length)];
@@ -74,11 +68,12 @@ class SpoonacularScraper {
           const recipes = await this.fetchRecipeBatch(offset, cuisine, dishType);
           
           for (const recipe of recipes) {
-            if (scrapedCount >= targetCount) break;
+            if (scrapedCount >= targetCount || scrapedCount >= this.dailyQuota) break;
 
             try {
               await this.processRecipe(recipe, session.id);
               scrapedCount++;
+              if (scrapedCount >= this.dailyQuota) break;
               console.log(`✅ Recette ${scrapedCount}/${targetCount}: ${recipe.title}`);
             } catch (error) {
               errorCount++;
@@ -101,30 +96,26 @@ class SpoonacularScraper {
       }
 
       // Finaliser la session
-      await supabase
-        .from('scraping_sessions')
-        .update({
-          status: 'completed',
-          completed_at: new Date().toISOString(),
-          recipes_scraped: scrapedCount,
-          errors_count: errorCount
-        })
-        .eq('id', session.id);
+      await pool.query(
+        `UPDATE scraping_sessions
+         SET status='completed', completed_at=NOW(),
+             recipes_scraped=$1, errors_count=$2
+         WHERE id=$3`,
+        [scrapedCount, errorCount, session.id]
+      );
 
       console.log(`🎉 Scraping terminé: ${scrapedCount} recettes, ${errorCount} erreurs`);
 
     } catch (error) {
       console.error('❌ Erreur fatale:', error);
       
-      await supabase
-        .from('scraping_sessions')
-        .update({
-          status: 'failed',
-          completed_at: new Date().toISOString(),
-          recipes_scraped: scrapedCount,
-          errors_count: errorCount
-        })
-        .eq('id', session.id);
+      await pool.query(
+        `UPDATE scraping_sessions
+         SET status='failed', completed_at=NOW(),
+             recipes_scraped=$1, errors_count=$2
+         WHERE id=$3`,
+        [scrapedCount, errorCount, session.id]
+      );
     }
   }
 
@@ -158,13 +149,12 @@ class SpoonacularScraper {
       .digest('hex');
 
     // Vérifier si la recette existe déjà
-    const { data: existing } = await supabase
-      .from('recipes_raw')
-      .select('id')
-      .eq('hash', hash)
-      .single();
+    const { rows: existing } = await pool.query(
+      'SELECT id FROM recipes_raw WHERE hash=$1 LIMIT 1',
+      [hash]
+    );
 
-    if (existing) {
+    if (existing.length) {
       console.log(`⏭️ Recette déjà existante: ${recipe.title}`);
       return;
     }
@@ -192,29 +182,31 @@ class SpoonacularScraper {
     ].map(tag => tag.toLowerCase());
 
     // Insérer la recette brute
-    const { error } = await supabase
-      .from('recipes_raw')
-      .insert({
-        scraping_session_id: sessionId,
-        external_id: recipe.id.toString(),
-        title: recipe.title,
-        description: this.cleanHtml(recipe.summary),
-        ingredients,
-        instructions,
-        cook_time: recipe.readyInMinutes,
-        servings: recipe.servings,
-        cuisine_type: recipe.cuisines?.[0]?.toLowerCase(),
+    await pool.query(
+      `INSERT INTO recipes_raw (
+        scraping_session_id, external_id, title, description,
+        ingredients, instructions, cook_time, servings, cuisine_type,
+        tags, nutrition, image_url, source_url, hash, status
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending'
+      )`,
+      [
+        sessionId,
+        recipe.id.toString(),
+        recipe.title,
+        this.cleanHtml(recipe.summary),
+        JSON.stringify(ingredients),
+        JSON.stringify(instructions),
+        recipe.readyInMinutes,
+        recipe.servings,
+        recipe.cuisines?.[0]?.toLowerCase(),
         tags,
-        nutrition: recipe.nutrition || {},
-        image_url: recipe.image,
-        source_url: recipe.sourceUrl,
-        hash,
-        status: 'pending'
-      });
-
-    if (error) {
-      throw new Error(`Erreur insertion DB: ${error.message}`);
-    }
+        recipe.nutrition || {},
+        recipe.image,
+        recipe.sourceUrl,
+        hash
+      ]
+    );
   }
 
   private cleanHtml(html: string): string {

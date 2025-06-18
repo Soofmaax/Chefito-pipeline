@@ -6,18 +6,16 @@
  * Cron: 0 23 * * * /usr/bin/node /path/to/ai-corrector.js
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { Pool } from 'pg';
 import crypto from 'crypto';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const DATABASE_URL = process.env.DATABASE_URL;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY; // Fallback si pas de modèle local
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  throw new Error('Variables d\'environnement Supabase manquantes');
+if (!DATABASE_URL) {
+  throw new Error('DATABASE_URL manquant');
 }
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+const pool = new Pool({ connectionString: DATABASE_URL });
 
 interface RecipeRaw {
   id: string;
@@ -56,18 +54,12 @@ class AICorrector {
     console.log('🧠 Début de la correction automatique par IA');
 
     // Récupérer les recettes en attente (plus anciennes que 48h pour éviter les conflits)
-    const { data: recipes, error } = await supabase
-      .from('recipes_raw')
-      .select('*')
-      .eq('status', 'pending')
-      .lt('scraped_at', new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
-      .order('scraped_at', { ascending: true })
-      .limit(50);
-
-    if (error) {
-      console.error('❌ Erreur récupération recettes:', error);
-      return;
-    }
+    const { rows: recipes } = await pool.query(
+      `SELECT * FROM recipes_raw
+       WHERE status='pending' AND scraped_at < NOW() - INTERVAL '48 hours'
+       ORDER BY scraped_at ASC
+       LIMIT 50`
+    );
 
     if (!recipes || recipes.length === 0) {
       console.log('ℹ️ Aucune recette à corriger');
@@ -84,10 +76,10 @@ class AICorrector {
         console.error(`❌ Erreur correction ${recipe.title}:`, error);
         
         // Marquer comme rejetée si trop d'erreurs
-        await supabase
-          .from('recipes_raw')
-          .update({ status: 'rejected' })
-          .eq('id', recipe.id);
+        await pool.query(
+          'UPDATE recipes_raw SET status=$1 WHERE id=$2',
+          ['rejected', recipe.id]
+        );
       }
 
       // Délai pour éviter la surcharge
@@ -99,10 +91,10 @@ class AICorrector {
 
   private async correctRecipe(recipe: RecipeRaw): Promise<void> {
     // Marquer comme en cours de traitement
-    await supabase
-      .from('recipes_raw')
-      .update({ status: 'processing' })
-      .eq('id', recipe.id);
+    await pool.query(
+      'UPDATE recipes_raw SET status=$1 WHERE id=$2',
+      ['processing', recipe.id]
+    );
 
     // Correction du titre
     const correctedTitle = this.correctTitle(recipe.title);
@@ -138,57 +130,67 @@ class AICorrector {
     });
 
     // Créer la recette nettoyée
-    const { data: cleanRecipe, error: insertError } = await supabase
-      .from('recipes_clean')
-      .insert({
-        raw_recipe_id: recipe.id,
-        title: correctedTitle,
-        description: correctedDescription,
-        ingredients: correctedIngredients,
-        cook_time: cookTime,
-        prep_time: prepTime,
-        total_time: cookTime + prepTime,
-        servings: recipe.servings || 4,
+    const { rows: cleanRows } = await pool.query(
+      `INSERT INTO recipes_clean (
+        raw_recipe_id, title, description, ingredients,
+        cook_time, prep_time, total_time, servings, difficulty,
+        cuisine_type, tags, nutrition, image_url,
+        corrected_by, validation_score, status
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'ai',$14,$15
+      ) RETURNING *`,
+      [
+        recipe.id,
+        correctedTitle,
+        correctedDescription,
+        JSON.stringify(correctedIngredients),
+        cookTime,
+        prepTime,
+        cookTime + prepTime,
+        recipe.servings || 4,
         difficulty,
-        cuisine_type: recipe.cuisine_type,
-        tags: cleanedTags,
-        nutrition: recipe.nutrition,
-        image_url: recipe.image_url,
-        corrected_by: 'ai',
-        validation_score: validationScore,
-        status: validationScore >= 0.8 ? 'validated' : 'validated' // Pour l'instant, tout est validé
-      })
-      .select()
-      .single();
-
-    if (insertError) {
-      throw new Error(`Erreur insertion recette nettoyée: ${insertError.message}`);
-    }
+        recipe.cuisine_type,
+        cleanedTags,
+        recipe.nutrition,
+        recipe.image_url,
+        validationScore,
+        validationScore >= 0.8 ? 'validated' : 'validated'
+      ]
+    );
+    const cleanRecipe = cleanRows[0];
 
     // Créer les étapes nettoyées
     for (const [index, step] of correctedSteps.entries()) {
-      await supabase
-        .from('steps_clean')
-        .insert({
-          recipe_id: cleanRecipe.id,
-          step_number: index + 1,
-          instruction: step.instruction,
-          duration_estimate: step.duration,
-          temperature: step.temperature,
-          tools: step.tools || [],
-          ingredients_used: step.ingredients || [],
-          action_type: step.action_type,
-          difficulty_level: step.difficulty || 1,
-          tips: step.tips,
-          warnings: step.warnings
-        });
+      await pool.query(
+        `INSERT INTO steps_clean (
+          recipe_id, step_number, instruction,
+          duration_estimate, temperature, tools,
+          ingredients_used, action_type, difficulty_level,
+          tips, warnings
+        ) VALUES (
+          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
+        )`,
+        [
+          cleanRecipe.id,
+          index + 1,
+          step.instruction,
+          step.duration,
+          step.temperature,
+          JSON.stringify(step.tools || []),
+          JSON.stringify(step.ingredients || []),
+          step.action_type,
+          step.difficulty || 1,
+          step.tips,
+          step.warnings
+        ]
+      );
     }
 
     // Marquer la recette brute comme corrigée
-    await supabase
-      .from('recipes_raw')
-      .update({ status: 'corrected' })
-      .eq('id', recipe.id);
+    await pool.query(
+      'UPDATE recipes_raw SET status=$1 WHERE id=$2',
+      ['corrected', recipe.id]
+    );
   }
 
   private correctTitle(title: string): string {
@@ -458,17 +460,15 @@ class AICorrector {
     corrected: string, 
     type: string
   ): Promise<void> {
-    await supabase
-      .from('correction_logs')
-      .insert({
-        recipe_id: recipeId,
-        correction_type: type,
-        field_corrected: field,
-        original_value: original,
-        corrected_value: corrected,
-        confidence_score: 0.8,
-        corrector_id: 'ai-system'
-      });
+    await pool.query(
+      `INSERT INTO correction_logs (
+        recipe_id, correction_type, field_corrected,
+        original_value, corrected_value, confidence_score, corrector_id
+      ) VALUES (
+        $1,$2,$3,$4,$5,0.8,'ai-system'
+      )`,
+      [recipeId, type, field, original, corrected]
+    );
   }
 
   private delay(ms: number): Promise<void> {

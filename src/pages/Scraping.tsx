@@ -245,7 +245,7 @@ const Scraping: React.FC = () => {
               <p className="mb-2">Pour activer le scraping automatique sur votre VPS :</p>
               <ol className="list-decimal list-inside space-y-1 ml-4">
                 <li>Copiez le script <code>spoonacular-scraper.ts</code> sur votre VPS</li>
-                <li>Configurez les variables d'environnement (Supabase + Spoonacular)</li>
+                <li>Configurez les variables d'environnement (PostgreSQL + Spoonacular)</li>
                 <li>Ajoutez le cron job : <code>0 22 * * * node spoonacular-scraper.js</code></li>
                 <li>Testez avec : <code>node spoonacular-scraper.js</code></li>
               </ol>

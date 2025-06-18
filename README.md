@@ -62,21 +62,21 @@ Chefito est un système complet qui automatise la collecte, le nettoyage et l'en
 
 ## 🚀 Déploiement
 
-### 1. Configuration Supabase
+### 1. Configuration PostgreSQL
 ```bash
-# Connecter à Supabase via l'interface Bolt
-# Les migrations se lancent automatiquement
+# Créer le schéma initial
+psql -f init-db.sql
 ```
 
 ### 2. Variables d'environnement (VPS)
 ```bash
-# Supabase
-SUPABASE_URL=your_supabase_url
-SUPABASE_SERVICE_KEY=your_service_key
+# Base de données PostgreSQL
+DATABASE_URL=postgres://user:password@localhost:5432/chefito
 
 # APIs externes
 SPOONACULAR_API_KEY=your_spoonacular_key
 ELEVENLABS_API_KEY=your_elevenlabs_key
+VITE_ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
 
 # Stockage (optionnel)
 CLOUDFLARE_R2_ENDPOINT=your_r2_endpoint
@@ -123,6 +123,7 @@ CLOUDFLARE_R2_BUCKET=chefito-audio
 - Instructions identiques = même fichier audio
 - Économie de quota et stockage
 - Performance optimale
+- Test rapide : `node src/scripts/test-audio.ts "Coupe les oignons"`
 
 ## 📈 Métriques et Monitoring
 
@@ -213,9 +214,9 @@ CLOUDFLARE_R2_BUCKET=chefito-audio
 **🎉 Système prêt pour la production !**
 
 Tout est configuré pour fonctionner de manière autonome. Il suffit de :
-1. Connecter Supabase
+1. Configurer la base PostgreSQL
 2. Configurer les VPS avec les scripts
 3. Lancer le premier scraping
 4. Surveiller le dashboard
 
-L'IA apprendra de vos corrections et deviendra de plus en plus autonome ! 🚀
+L'IA apprendra de vos corrections et deviendra de plus en plus autonome ! 🚀\nSee `docs/production-checklist.md` for deployment steps.
