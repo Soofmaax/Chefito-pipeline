@@ -136,25 +136,25 @@ const Settings: React.FC = () => {
               <div className="space-y-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    URL Supabase
+                    URL PostgreSQL
                   </label>
                   <input
                     type="url"
                     className="input"
-                    placeholder="https://your-project.supabase.co"
-                    defaultValue="https://xyzabc.supabase.co"
+                    placeholder="postgres://user:password@localhost:5432/chefito"
+                    defaultValue="postgres://user:password@localhost:5432/chefito"
                   />
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Clé Service Supabase
+                    Chaîne de connexion
                   </label>
                   <input
-                    type="password"
+                    type="text"
                     className="input"
-                    placeholder="your_service_role_key"
-                    defaultValue="eyJ..."
+                    placeholder="postgres://user:password@host:5432/db"
+                    defaultValue="postgres://user:password@localhost:5432/chefito"
                   />
                 </div>
 
@@ -258,7 +258,7 @@ const Settings: React.FC = () => {
                   <input
                     type="text"
                     className="input"
-                    defaultValue="21m00Tcm4TlvDq8ikWAM"
+                    defaultValue={import.meta.env.VITE_ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM'}
                     placeholder="Voice ID"
                   />
                 </div>

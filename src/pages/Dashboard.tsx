@@ -9,12 +9,12 @@ import {
   CheckCircle,
   AlertCircle
 } from 'lucide-react';
-import StatsCard from '../components/StatsCard';
+import StatsCard, { type StatsCardProps } from '../components/StatsCard';
 import RecentActivity from '../components/RecentActivity';
 import SystemStatus from '../components/SystemStatus';
 
 const Dashboard: React.FC = () => {
-  const stats = [
+  const stats: StatsCardProps[] = [
     {
       title: 'Recettes totales',
       value: '1,247',

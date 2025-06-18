@@ -1,13 +1,11 @@
-import { createClient } from '@supabase/supabase-js';
+import { Pool } from 'pg';
+import * as CryptoJS from 'crypto-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error('Missing Supabase environment variables');
-}
-
-export const supabase = createClient(supabaseUrl, supabaseKey);
+export const db = {
+  query: (text: string, params?: any[]) => pool.query(text, params)
+};
 
 // Types pour TypeScript
 export interface RecipeRaw {
@@ -60,6 +58,7 @@ export interface StepClean {
   id: string;
   recipe_id: string;
   raw_step_id?: string;
+  audio_id?: string;
   step_number: number;
   instruction: string;
   duration_estimate?: number;
@@ -79,6 +78,7 @@ export interface StepAudio {
   instruction_hash: string;
   audio_url: string;
   provider: 'elevenlabs' | 'gtts' | 'local';
+  source?: 'elevenlabs' | 'gtts';
   duration_seconds?: number;
   file_size_bytes?: number;
   quality: string;
@@ -116,86 +116,7 @@ export interface ScrapingSession {
 
 // Fonctions utilitaires pour la base de données
 export const dbUtils = {
-  // Récupérer les recettes avec pagination
-  async getRecipes(page = 1, limit = 20, status?: string) {
-    let query = supabase
-      .from('recipes_raw')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .range((page - 1) * limit, page * limit - 1);
-
-    if (status && status !== 'all') {
-      query = query.eq('status', status);
-    }
-
-    return query;
-  },
-
-  // Récupérer une recette avec ses étapes
-  async getRecipeWithSteps(recipeId: string) {
-    const [recipeResult, stepsResult] = await Promise.all([
-      supabase.from('recipes_clean').select('*').eq('id', recipeId).single(),
-      supabase.from('steps_clean').select('*').eq('recipe_id', recipeId).order('step_number')
-    ]);
-
-    return {
-      recipe: recipeResult.data,
-      steps: stepsResult.data || [],
-      error: recipeResult.error || stepsResult.error
-    };
-  },
-
-  // Créer une session de scraping
-  async createScrapingSession(provider = 'spoonacular', config = {}) {
-    return supabase
-      .from('scraping_sessions')
-      .insert({
-        provider,
-        config,
-        status: 'running'
-      })
-      .select()
-      .single();
-  },
-
-  // Ajouter une recette brute
-  async addRawRecipe(recipe: Partial<RecipeRaw>) {
-    return supabase
-      .from('recipes_raw')
-      .insert(recipe)
-      .select()
-      .single();
-  },
-
-  // Logger une correction
-  async logCorrection(correction: Partial<CorrectionLog>) {
-    return supabase
-      .from('correction_logs')
-      .insert(correction);
-  },
-
-  // Générer un hash pour l'audio
   generateInstructionHash(instruction: string): string {
-    // Utilisation de crypto-js pour générer un hash
-    const CryptoJS = require('crypto-js');
     return CryptoJS.SHA256(instruction.toLowerCase().trim()).toString();
-  },
-
-  // Vérifier si l'audio existe déjà
-  async checkAudioExists(instructionHash: string) {
-    return supabase
-      .from('steps_audio')
-      .select('*')
-      .eq('instruction_hash', instructionHash)
-      .single();
-  },
-
-  // Récupérer les métriques système
-  async getSystemMetrics(hours = 24) {
-    return supabase
-      .from('system_metrics')
-      .select('*')
-      .gte('recorded_at', new Date(Date.now() - hours * 60 * 60 * 1000).toISOString())
-      .order('recorded_at', { ascending: false });
   }
 };
